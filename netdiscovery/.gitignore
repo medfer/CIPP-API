@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+topology.html
+topology_l2.html
+topology_l3.html
+topology.graphml

@@ -1,0 +1,7 @@
+networkx>=3.2
+pyvis>=0.3.2
+pytest>=7.0
+
+# Real SNMP transport (LiveSnmpTransport). Optional for the simulated demo --
+# only import netdiscovery.transport.LiveSnmpTransport requires it installed.
+pysnmp>=6.1; python_version >= "3.11"
