@@ -53,9 +53,11 @@ def main() -> None:
     print(f"Discovering from seed(s): {', '.join(args.seed)} "
           f"(SNMP v2c, port {args.port}, timeout {args.timeout}s x{args.retries + 1} tries) ...")
 
-    def on_device(ip: str, device) -> None:
+    def on_device(ip: str, device, error) -> None:
         if device.reachable:
             print(f"  [ok]      {ip:<16} {device.sysname:<18} {device.vendor:<10} {device.role.value}")
+        elif error:
+            print(f"  [error]   {ip:<16} {error}")
         else:
             print(f"  [timeout] {ip:<16} (unreachable)")
 
@@ -89,6 +91,9 @@ def main() -> None:
         f"{summary['l3_adjacencies']} L3 adjacencies, "
         f"{summary['endpoints_attached']} non-LLDP endpoints attached"
     )
+    if result.errors:
+        print(f"{len(result.errors)} device(s) hit a collection error (see [error] lines above) "
+              "-- treated as unreachable rather than aborting the run")
     print()
     print("Wrote:")
     for path in html_paths.values():

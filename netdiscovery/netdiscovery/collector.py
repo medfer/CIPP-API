@@ -46,6 +46,28 @@ def _normalize_mac(value: Optional[str]) -> Optional[str]:
     return value.lower()
 
 
+def _normalize_ip(value: Optional[str]) -> Optional[str]:
+    """Normalize an IP-address-typed SNMP value to dotted-decimal.
+
+    SimulatedTransport already returns IPs in this form (passthrough). A
+    real device's LLDP remote management address / CDP cache address is
+    carried as a raw-octet OctetString rather than the native SNMP
+    IpAddress type; pysnmp's prettyPrint() renders that as a single
+    "0x..." hex blob (same issue as _normalize_mac) instead of "a.b.c.d".
+    Only handles the plain 4-byte-IPv4 case -- anything else (e.g. an
+    IPv6 management address) is left as-is and simply won't resolve to a
+    discoverable neighbor, rather than crash the walk.
+    """
+    if not value:
+        return value
+    if value.startswith(("0x", "0X")) and len(value) == 10:
+        try:
+            return ".".join(str(b) for b in bytes.fromhex(value[2:]))
+        except ValueError:
+            return None
+    return value
+
+
 def _lldp_local_ifindex(suffix: str) -> Optional[int]:
     """Local ifIndex from an lldpRemEntry suffix.
 
@@ -151,7 +173,7 @@ def _collect_neighbors(transport: SnmpTransport, ip: str,
             local_if=local_if.name if local_if else idx_str,
             remote_sysname=remote_sysname,
             remote_port=lldp_ports.get(idx_str, ""),
-            remote_mgmt_ip=lldp_mgmt.get(idx_str),
+            remote_mgmt_ip=_normalize_ip(lldp_mgmt.get(idx_str)),
             protocol="lldp",
             remote_chassis_id=lldp_chassis.get(idx_str),
         ))
@@ -166,7 +188,7 @@ def _collect_neighbors(transport: SnmpTransport, ip: str,
             local_if=local_if.name if local_if else idx_str,
             remote_sysname=remote_sysname,
             remote_port=cdp_ports.get(idx_str, ""),
-            remote_mgmt_ip=cdp_addrs.get(idx_str),
+            remote_mgmt_ip=_normalize_ip(cdp_addrs.get(idx_str)),
             protocol="cdp",
         ))
 
