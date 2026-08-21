@@ -3,7 +3,7 @@
 
     python discover_live.py --seed 192.168.1.1 [192.168.1.2 ...] \
         --community public [--port 161] [--timeout 1.5] [--retries 1] \
-        [--max-devices 1000] [--out-dir .]
+        [--max-devices 1000] [--concurrency 10] [--out-dir .]
 
 This is the same engine as demo.py -- discovery BFS, device
 classification, L2/L3 correlation, graph model, HTML rendering -- with
@@ -39,6 +39,8 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=1.5, help="per-request timeout in seconds")
     parser.add_argument("--retries", type=int, default=1)
     parser.add_argument("--max-devices", type=int, default=1000)
+    parser.add_argument("--concurrency", type=int, default=10,
+                         help="devices probed in parallel (default 10; 1 = strictly sequential)")
     parser.add_argument("--out-dir", default=".", help="where to write topology.html/.graphml")
     args = parser.parse_args()
 
@@ -51,7 +53,8 @@ def main() -> None:
         raise SystemExit(str(exc))
 
     print(f"Discovering from seed(s): {', '.join(args.seed)} "
-          f"(SNMP v2c, port {args.port}, timeout {args.timeout}s x{args.retries + 1} tries) ...")
+          f"(SNMP v2c, port {args.port}, timeout {args.timeout}s x{args.retries + 1} tries, "
+          f"concurrency {args.concurrency}) ...")
 
     def on_device(ip: str, device, error) -> None:
         if device.reachable:
@@ -62,7 +65,8 @@ def main() -> None:
             print(f"  [timeout] {ip:<16} (unreachable)")
 
     start = time.monotonic()
-    result = discover(transport, args.seed, max_devices=args.max_devices, on_device=on_device)
+    result = discover(transport, args.seed, max_devices=args.max_devices,
+                       on_device=on_device, concurrency=args.concurrency)
     elapsed = time.monotonic() - start
 
     if not result.reachable_devices:

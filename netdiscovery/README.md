@@ -77,7 +77,17 @@ runs against a real network.
 engine collects each device, reads its LLDP/CDP neighbor table, and
 enqueues any neighbor management IP it hasn't seen yet. An unreachable
 device is recorded as a dead node in the graph and simply doesn't expand
-any further -- one dead host can't abort the walk.
+any further -- one dead host can't abort the walk (a device that raises
+during collection is caught and handled the same way, its error captured
+in `DiscoveryResult.errors`, so an unusual/malformed response from one
+unfamiliar device can't take down the whole run either). The BFS itself
+is transport-agnostic concurrency: a thread pool probes up to
+`concurrency` devices in parallel (frontier nodes are handed to workers
+as they free up, same BFS order as the sequential walk at
+`concurrency=1`), which is what makes scaling toward a fleet of hundreds
+or thousands of devices tractable -- serially, one slow/dead host costs a
+full `timeout * (retries + 1)` seconds each, and that adds up fast across
+a large network.
 
 **Device identification** (`device_id.py`). Vendor comes from the
 sysObjectID enterprise prefix (falling back to sysDescr keyword matching).
@@ -153,7 +163,9 @@ classification, L2/L3 correlation, graph model, HTML rendering -- with
 `SimulatedTransport`. `pysnmp` is only imported when `LiveSnmpTransport` is
 actually instantiated, so the simulated demo path never needs it installed.
 Useful flags: `--port`, `--timeout`, `--retries`, `--max-devices`,
-`--out-dir`. Run `python discover_live.py --help` for the full list.
+`--concurrency` (default 10 -- how many devices are probed in parallel;
+`1` for strictly sequential), `--out-dir`. Run `python discover_live.py
+--help` for the full list.
 
 The SNMP community string is read-only credential material -- pass it via
 `--community` or the `NETDISCOVERY_SNMP_COMMUNITY` environment variable
