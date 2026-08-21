@@ -89,6 +89,30 @@ or thousands of devices tractable -- serially, one slow/dead host costs a
 full `timeout * (retries + 1)` seconds each, and that adds up fast across
 a large network.
 
+**Scaling evidence, honestly labeled.** This has never been run against a
+real network of thousands of devices -- that claim would be untested. What
+*is* measured: `stress_test.py` builds a synthetic 2-core/40-dist/
+2000-access hierarchy (2042 SNMP-speaking devices, 10,000 FDB-only
+endpoints) and injects a 5ms artificial per-SNMP-call latency to stand in
+for real round-trip time. Result on this development machine:
+
+| concurrency | wall time | devices/s |
+|---|---|---|
+| 1   | 252.9s | 8.1 |
+| 50  | 5.2s   | 390.5 |
+| 200 | 2.2s   | 950.0 |
+| 500 | 2.0s   | 1026.5 |
+
+Zero errors at every level; full discovery + L2/L3 correlation + graph
+build for all 2042 devices and 10,000 endpoints completes in ~2s using
+~72MB peak RSS. Returns clearly diminish past `concurrency=200` here --
+expected, since this is one Python process bound by the GIL for the
+non-I/O portions of each thread's work; a real deployment at this scale
+would want to confirm the same shape against real device latency (usually
+higher than 5ms) and may eventually want multiple worker processes rather
+than pushing one process's thread pool past a few hundred. Run
+`python stress_test.py --help` to reproduce or push further.
+
 **Device identification** (`device_id.py`). Vendor comes from the
 sysObjectID enterprise prefix (falling back to sysDescr keyword matching).
 Role comes from sysDescr keywords for firewall/AP (which would otherwise
@@ -144,10 +168,14 @@ netdiscovery/
 │   ├── l3_topology.py        # subnet/route-based L3 adjacency
 │   ├── topology.py           # unified MultiGraph, layer views, GraphML export
 │   └── visualize.py          # interactive HTML rendering
+├── stress_test.py           # synthetic large-scale (~2000-device) scaling measurement
 └── tests/
     ├── test_device_id.py
     ├── test_l2_topology.py
-    └── test_l3_topology.py
+    ├── test_l3_topology.py
+    ├── test_collector.py     # value-normalization regressions found against real hardware
+    ├── test_discovery.py     # BFS concurrency correctness + resilience to a bad device
+    └── test_transport.py     # LiveSnmpTransport / SNMPv3 parameter validation
 ```
 
 ## Pointing this at a real network
@@ -174,6 +202,24 @@ rather than leaving it in shell history, and never commit it anywhere.
 If nothing responds: check the seed IP(s), the community string, that
 UDP/161 isn't firewalled between this host and the target, and that SNMP
 is actually enabled on the device.
+
+**SNMPv3.** Plain v2c sends its community string unencrypted on the wire;
+pass `--snmp-version v3` for authenticated + encrypted polling instead:
+
+```bash
+python discover_live.py --seed 192.168.1.1 --snmp-version v3 \
+    --v3-user myuser --v3-security-level authPriv \
+    --v3-auth-protocol sha --v3-auth-password '...' \
+    --v3-priv-protocol aes128 --v3-priv-password '...'
+```
+
+`--v3-security-level` is `noAuthNoPriv` / `authNoPriv` / `authPriv`
+(default `authPriv`); auth passwords can also come from
+`NETDISCOVERY_V3_USER`/`NETDISCOVERY_V3_AUTH_PASSWORD`/
+`NETDISCOVERY_V3_PRIV_PASSWORD` instead of the command line. Validated
+against a real net-snmp v3 agent (authPriv, SHA/AES) -- see
+`tests/test_transport.py` for the parameter-validation coverage and the
+commit history for the live-agent verification.
 
 **pysnmp version note.** `pysnmp`'s `hlapi` is asyncio-only in every
 currently maintained release -- `LiveSnmpTransport` wraps each
