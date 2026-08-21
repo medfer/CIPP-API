@@ -169,13 +169,15 @@ netdiscovery/
 │   ├── topology.py           # unified MultiGraph, layer views, GraphML export
 │   └── visualize.py          # interactive HTML rendering
 ├── stress_test.py           # synthetic large-scale (~2000-device) scaling measurement
+├── bulk_configure_snmp.py   # SSH-push SNMP RO community+ACL to a fleet of switches
 └── tests/
     ├── test_device_id.py
     ├── test_l2_topology.py
     ├── test_l3_topology.py
     ├── test_collector.py     # value-normalization regressions found against real hardware
     ├── test_discovery.py     # BFS concurrency correctness + resilience to a bad device
-    └── test_transport.py     # LiveSnmpTransport / SNMPv3 parameter validation
+    ├── test_transport.py     # LiveSnmpTransport / SNMPv3 parameter validation
+    └── test_bulk_configure_snmp.py
 ```
 
 ## Pointing this at a real network
@@ -252,3 +254,39 @@ synchronous interface identical between the simulated and live paths.
 `v1arch`/`v3arch` submodules that also pull in the full USM/crypto stack
 even for plain v2c polling, so this POC targets the lighter, still
 fully-maintained `pysnmp.hlapi.asyncio` module from the 6.x line instead.
+
+## Bootstrapping SNMP across a fleet that doesn't have it yet
+
+`discover_live.py` can only walk a device that already answers SNMP. On a
+real network that's often not every device yet -- LLDP/CDP still finds a
+neighbor's management IP even when that neighbor never responds, so it
+shows up as `[timeout]` rather than being silently missed, but it stays
+undiscovered until SNMP is actually turned on there.
+
+`bulk_configure_snmp.py` pushes a read-only SNMP v2c community (+ a
+source-restricting ACL) to a list of Cisco IOS/IOS-XE switches over SSH,
+so you don't have to do it by hand one switch at a time:
+
+```bash
+pip install netmiko   # not in requirements.txt -- see the file's docstring for why
+python bulk_configure_snmp.py --hosts-file switches.txt \
+    --ssh-user admin --community public --allow-ip 192.168.102.6
+```
+
+Defaults to a dry run (prints what it *would* push, touches nothing) --
+pass `--apply` to actually push, and it'll ask for confirmation once
+before touching more than one switch (`--yes` skips that for scripted
+use). Idempotent: a switch that already has the exact line this would
+push is skipped, not re-configured. SSH/enable passwords are prompted
+interactively, never hardcoded -- see the file's docstring for the full
+flag list, the environment-variable alternative, and how to roll a
+change back by hand.
+
+**Not validated against a real switch in this session** -- same honest
+caveat as the Aruba/Juniper/Fortinet hardware point: there's no real
+Cisco device reachable from here to SSH into. What *is* verified:
+`tests/test_bulk_configure_snmp.py` covers the command-building and
+idempotency-check logic, and the connection-failure path (wrong host,
+closed port, bad auth) was exercised and confirmed to fail one host
+cleanly without aborting the batch. Test it against one switch with
+`--hosts <ip>` (no `--apply`) before trusting it against a whole fleet.
