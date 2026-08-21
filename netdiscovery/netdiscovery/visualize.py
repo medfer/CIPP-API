@@ -101,7 +101,14 @@ def render(graph: nx.MultiGraph, out_path: str, heading: str) -> None:
     for u, v, _key, data in graph.edges(keys=True, data=True):
         net.add_edge(u, v, **_edge_style(data))
 
-    net.write_html(out_path, notebook=False, open_browser=False)
+    # Don't use net.write_html(): it opens the output file with no explicit
+    # encoding, which defaults to the platform's preferred encoding (e.g.
+    # cp1252 on Windows) and crashes on the non-ASCII characters vis-network's
+    # inlined assets contain. Generate the HTML ourselves and write it as
+    # UTF-8 explicitly.
+    html = net.generate_html(notebook=False)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
 
 
 def render_all(topology: Topology, out_dir: str) -> dict[str, str]:
