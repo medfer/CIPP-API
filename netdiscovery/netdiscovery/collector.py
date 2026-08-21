@@ -46,6 +46,40 @@ def _normalize_mac(value: Optional[str]) -> Optional[str]:
     return value.lower()
 
 
+def _lldp_local_ifindex(suffix: str) -> Optional[int]:
+    """Local ifIndex from an lldpRemEntry suffix.
+
+    SimulatedTransport collapses the index to a single "<ifIndex>" (see
+    mibs.py). A real device follows LLDP-MIB's actual 3-part index --
+    "<lldpRemTimeMark>.<lldpRemLocalPortNum>.<lldpRemIndex>" -- so take the
+    middle component there instead. (lldpRemLocalPortNum isn't guaranteed
+    to equal ifIndex on every platform -- that mapping technically lives in
+    lldpLocPortTable -- but it does on the Cisco/Aruba/Juniper gear this
+    POC targets, and this is the pragmatic approximation for a POC that
+    doesn't walk a second table just to resolve it.)
+    """
+    parts = suffix.split(".")
+    try:
+        return int(parts[0]) if len(parts) == 1 else int(parts[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _cdp_local_ifindex(suffix: str) -> Optional[int]:
+    """Local ifIndex from a cdpCacheEntry suffix.
+
+    SimulatedTransport collapses the index to a single "<ifIndex>". A real
+    device follows CDP-MIB's actual 2-part index --
+    "<cdpCacheIfIndex>.<cdpCacheDeviceIndex>" -- where the first component
+    already is the ifIndex either way.
+    """
+    parts = suffix.split(".")
+    try:
+        return int(parts[0])
+    except (ValueError, IndexError):
+        return None
+
+
 def _parse_fdb_suffix(suffix: str) -> tuple[int, str]:
     """"<vlan>.<6 decimal mac octets>" -> (vlan, "aa:bb:cc:dd:ee:ff")."""
     parts = suffix.split(".")
@@ -111,7 +145,8 @@ def _collect_neighbors(transport: SnmpTransport, ip: str,
     lldp_chassis = _walk_suffixes(transport, ip, mibs.LLDP_REM_CHASSIS_ID)
     lldp_mgmt = _walk_suffixes(transport, ip, mibs.LLDP_REM_MGMT_ADDR)
     for idx_str, remote_sysname in lldp_names.items():
-        local_if = by_index.get(int(idx_str))
+        local_ifindex = _lldp_local_ifindex(idx_str)
+        local_if = by_index.get(local_ifindex) if local_ifindex is not None else None
         neighbors.append(Neighbor(
             local_if=local_if.name if local_if else idx_str,
             remote_sysname=remote_sysname,
@@ -125,7 +160,8 @@ def _collect_neighbors(transport: SnmpTransport, ip: str,
     cdp_ports = _walk_suffixes(transport, ip, mibs.CDP_CACHE_DEVICE_PORT)
     cdp_addrs = _walk_suffixes(transport, ip, mibs.CDP_CACHE_ADDRESS)
     for idx_str, remote_sysname in cdp_names.items():
-        local_if = by_index.get(int(idx_str))
+        local_ifindex = _cdp_local_ifindex(idx_str)
+        local_if = by_index.get(local_ifindex) if local_ifindex is not None else None
         neighbors.append(Neighbor(
             local_if=local_if.name if local_if else idx_str,
             remote_sysname=remote_sysname,
