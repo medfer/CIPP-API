@@ -49,7 +49,25 @@ DOT1Q_TP_FDB_PORT = "1.3.6.1.2.1.17.7.1.2.2.1.2"
 
 # --- IP-MIB (ARP cache) --------------------------------------------------------
 # RFC 1213 indexing: ipNetToMediaPhysAddress.<ifIndex>.<ip a.b.c.d> -> mac
+# IPv4-only (RFC 1213 predates IPv6) -- see ipNetToPhysicalTable below for
+# the version-neutral replacement that also covers the IPv6 neighbor cache.
 IP_NET_TO_MEDIA_PHYS_ADDRESS = "1.3.6.1.2.1.4.22.1.2"
+
+# --- IP-MIB (RFC 4293, version-neutral IPv4+IPv6 tables) -----------------------
+# ipAddressTable: index is <ipAddressAddrType>.<address-bytes>, where type is
+# 1 (IPv4, 4 address-byte components) or 2 (IPv6, 16 address-byte
+# components); the *value* returned for this column is the owning ifIndex.
+IP_ADDRESS_IF_INDEX = "1.3.6.1.2.1.4.34.1.3"
+
+# ipNetToPhysicalTable: the version-neutral ARP/IPv6-neighbor-cache
+# replacement for ipNetToMediaTable. Index is
+# <ifIndex>.<ipNetToPhysicalNetAddressType>.<address-bytes>, same address
+# type/length convention as ipAddressTable above.
+IP_NET_TO_PHYSICAL_PHYS_ADDRESS = "1.3.6.1.2.1.4.35.1.4"
+
+# InetAddressType (INET-ADDRESS-MIB, RFC 4001) values this POC understands.
+INET_ADDRESS_TYPE_IPV4 = 1
+INET_ADDRESS_TYPE_IPV6 = 2
 
 # --- IP-FORWARD-MIB / IP-MIB (routing table) -----------------------------------
 # RFC 2096 indexing: ipCidrRoute*.<dest a.b.c.d>.<mask a.b.c.d>.<tos>.<nexthop>

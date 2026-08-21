@@ -148,6 +148,19 @@ class LiveSnmpTransport(SnmpTransport):
             kwargs["privProtocol"] = priv_protocols[self._priv_protocol]
         return UsmUserData(self._username, **kwargs)
 
+    def _build_transport_target(self, ip: str):
+        """UdpTransportTarget for an IPv4 target, Udp6TransportTarget for
+        an IPv6 one -- picked from the target address itself, since a
+        dual-stack discovery run can have both IPv4 and IPv6 devices (or
+        an IPv6-only device found via ipNetToPhysicalTable/LLDP) in the
+        same BFS."""
+        import ipaddress
+
+        from pysnmp.hlapi.asyncio import Udp6TransportTarget, UdpTransportTarget
+
+        target_cls = Udp6TransportTarget if ipaddress.ip_address(ip).version == 6 else UdpTransportTarget
+        return target_cls((ip, self._port), timeout=self._timeout, retries=self._retries)
+
     def is_reachable(self, ip: str) -> bool:
         return self.get(ip, mibs.SYS_DESCR) is not None
 
@@ -155,8 +168,7 @@ class LiveSnmpTransport(SnmpTransport):
         import asyncio
 
         from pysnmp.hlapi.asyncio import (
-            ContextData, ObjectIdentity, ObjectType, SnmpEngine,
-            UdpTransportTarget, getCmd,
+            ContextData, ObjectIdentity, ObjectType, SnmpEngine, getCmd,
         )
         from pysnmp.proto.rfc1905 import EndOfMibView, NoSuchInstance, NoSuchObject
 
@@ -164,8 +176,7 @@ class LiveSnmpTransport(SnmpTransport):
             error_indication, error_status, _error_index, var_binds = await getCmd(
                 SnmpEngine(),
                 self._build_auth_data(),
-                UdpTransportTarget((ip, self._port), timeout=self._timeout,
-                                    retries=self._retries),
+                self._build_transport_target(ip),
                 ContextData(),
                 ObjectType(ObjectIdentity(oid)),
                 lookupMib=False,
@@ -195,8 +206,7 @@ class LiveSnmpTransport(SnmpTransport):
         import asyncio
 
         from pysnmp.hlapi.asyncio import (
-            ContextData, ObjectIdentity, ObjectType, SnmpEngine,
-            UdpTransportTarget, walkCmd,
+            ContextData, ObjectIdentity, ObjectType, SnmpEngine, walkCmd,
         )
         from pysnmp.proto.rfc1905 import EndOfMibView, NoSuchInstance, NoSuchObject
 
@@ -205,8 +215,7 @@ class LiveSnmpTransport(SnmpTransport):
             async for error_indication, error_status, _error_index, var_binds in walkCmd(
                 SnmpEngine(),
                 self._build_auth_data(),
-                UdpTransportTarget((ip, self._port), timeout=self._timeout,
-                                    retries=self._retries),
+                self._build_transport_target(ip),
                 ContextData(),
                 ObjectType(ObjectIdentity(oid_prefix)),
                 lexicographicMode=False,

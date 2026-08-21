@@ -221,6 +221,29 @@ against a real net-snmp v3 agent (authPriv, SHA/AES) -- see
 `tests/test_transport.py` for the parameter-validation coverage and the
 commit history for the live-agent verification.
 
+**IPv6.** `LiveSnmpTransport` picks `Udp6TransportTarget` automatically
+for an IPv6 seed/neighbor IP (`UdpTransportTarget` for IPv4) -- a mixed
+IPv4/IPv6 network discovers in one run, no flag needed. Collection adds
+RFC 4293's version-neutral `ipAddressTable`/`ipNetToPhysicalTable`
+alongside the legacy IPv4-only `ipAddrTable`/`ipNetToMediaTable`, so
+IPv6-only endpoints (cameras/IoT/etc. with no IPv4 at all) get attached
+via the ND cache exactly like IPv4-only ones attach via ARP.
+
+Two honest limits, not glossed over:
+- **Not validated against real IPv6 SNMP traffic.** This development
+  sandbox has no IPv6 stack at all (no `/proc/net/if_inet6`), so unlike
+  v2c/v3/the concurrency work above, this was verified at the parsing/
+  unit-test level against hand-built RFC-correct data (see
+  `tests/test_collector.py`), not against a live IPv6 agent. Treat it as
+  implemented-and-unit-tested, not field-proven, until it's run against
+  a real dual-stack device.
+- **One IP per interface.** `models.py`'s `Interface.ip` is a single
+  field (that file was given as fixed starting code, not something this
+  POC redesigns). On a dual-stack interface the legacy IPv4 address wins
+  and the IPv6 one is dropped rather than silently overwriting it;
+  an IPv6-*only* interface is still fully collected. Full dual-stack
+  interface tracking would need `Interface` to hold a list of addresses.
+
 **pysnmp version note.** `pysnmp`'s `hlapi` is asyncio-only in every
 currently maintained release -- `LiveSnmpTransport` wraps each
 get/walk in its own `asyncio.run()` call to keep `SnmpTransport`'s

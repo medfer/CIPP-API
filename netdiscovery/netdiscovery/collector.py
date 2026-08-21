@@ -8,6 +8,7 @@ and returns a populated `models.Device`. It only ever calls
 """
 from __future__ import annotations
 
+import ipaddress
 from typing import Optional
 
 from . import device_id, mibs
@@ -47,24 +48,30 @@ def _normalize_mac(value: Optional[str]) -> Optional[str]:
 
 
 def _normalize_ip(value: Optional[str]) -> Optional[str]:
-    """Normalize an IP-address-typed SNMP value to dotted-decimal.
+    """Normalize an IP-address-typed SNMP value (IPv4 or IPv6) to its
+    standard text form.
 
     SimulatedTransport already returns IPs in this form (passthrough). A
     real device's LLDP remote management address / CDP cache address is
     carried as a raw-octet OctetString rather than the native SNMP
     IpAddress type; pysnmp's prettyPrint() renders that as a single
-    "0x..." hex blob (same issue as _normalize_mac) instead of "a.b.c.d".
-    Only handles the plain 4-byte-IPv4 case -- anything else (e.g. an
-    IPv6 management address) is left as-is and simply won't resolve to a
-    discoverable neighbor, rather than crash the walk.
+    "0x..." hex blob (same issue as _normalize_mac) instead of readable
+    text -- 4 bytes ("0x" + 8 hex chars) for IPv4, 16 bytes ("0x" + 32 hex
+    chars) for IPv6. Anything else is left as-is rather than crash the
+    walk, and simply won't resolve to a discoverable neighbor.
     """
     if not value:
         return value
-    if value.startswith(("0x", "0X")) and len(value) == 10:
+    if value.startswith(("0x", "0X")):
+        hex_len = len(value) - 2
         try:
-            return ".".join(str(b) for b in bytes.fromhex(value[2:]))
+            raw = bytes.fromhex(value[2:])
         except ValueError:
-            return None
+            return value
+        if hex_len == 8:
+            return ".".join(str(b) for b in raw)
+        if hex_len == 32:
+            return str(ipaddress.IPv6Address(raw))
     return value
 
 
@@ -124,6 +131,49 @@ def _parse_route_suffix(suffix: str) -> tuple[str, str]:
     return dest, mask
 
 
+def _decode_inet_address(addr_type_str: str, byte_strs: list[str]) -> Optional[str]:
+    """RFC 4293/4001 InetAddressType-tagged address bytes -> text form.
+
+    Both ipAddressTable and ipNetToPhysicalTable (RFC 4293, the
+    version-neutral tables this POC uses to pick up IPv6 alongside the
+    legacy IPv4-only ipAddrTable/ipNetToMediaTable) encode an address as
+    <InetAddressType>.<address-bytes-as-decimal-octets> in the OID, with
+    the byte count depending on the type: 4 for IPv4, 16 for IPv6. Any
+    other type (DNS name, zoned address, etc.) is out of scope here.
+    """
+    try:
+        addr_type = int(addr_type_str)
+        octets = [int(b) for b in byte_strs]
+    except ValueError:
+        return None
+    if addr_type == mibs.INET_ADDRESS_TYPE_IPV4 and len(octets) >= 4:
+        return ".".join(str(o) for o in octets[:4])
+    if addr_type == mibs.INET_ADDRESS_TYPE_IPV6 and len(octets) >= 16:
+        return str(ipaddress.IPv6Address(bytes(octets[:16])))
+    return None
+
+
+def _parse_ip_address_suffix(suffix: str) -> Optional[str]:
+    """ipAddressTable index: "<InetAddressType>.<address-bytes>" -> ip."""
+    parts = suffix.split(".")
+    if not parts:
+        return None
+    return _decode_inet_address(parts[0], parts[1:])
+
+
+def _parse_net_to_physical_suffix(suffix: str) -> tuple[Optional[int], Optional[str]]:
+    """ipNetToPhysicalTable index:
+    "<ifIndex>.<InetAddressType>.<address-bytes>" -> (ifIndex, ip)."""
+    parts = suffix.split(".")
+    if len(parts) < 2:
+        return None, None
+    try:
+        ifindex = int(parts[0])
+    except ValueError:
+        return None, None
+    return ifindex, _decode_inet_address(parts[1], parts[2:])
+
+
 def _collect_interfaces(transport: SnmpTransport, ip: str) -> list[Interface]:
     names = _walk_suffixes(transport, ip, mibs.IF_DESCR)
     macs = _walk_suffixes(transport, ip, mibs.IF_PHYS_ADDRESS)
@@ -154,6 +204,26 @@ def _collect_interfaces(transport: SnmpTransport, ip: str) -> list[Interface]:
         mask = ip_mask.get(ip_addr)
         if mask:
             iface.prefix_len = _mask_to_prefix_len(mask)
+
+    # RFC 4293's version-neutral ipAddressTable, additionally -- picks up
+    # IPv6 addresses the legacy IPv4-only ipAddrTable above can't. Models.py
+    # gives each Interface a single `ip`, so on a dual-stack interface the
+    # IPv4 address from the legacy table above wins and the IPv6 one here
+    # is dropped rather than silently overwriting it -- a real limitation
+    # of the single-address model, not a bug: an IPv6-*only* interface is
+    # still fully picked up.
+    ip_address_ifindex = _walk_suffixes(transport, ip, mibs.IP_ADDRESS_IF_INDEX)
+    for suffix, ifidx_str in ip_address_ifindex.items():
+        addr = _parse_ip_address_suffix(suffix)
+        if addr is None:
+            continue
+        try:
+            iface = by_index.get(int(ifidx_str))
+        except ValueError:
+            continue
+        if iface is None or iface.ip:
+            continue
+        iface.ip = addr
 
     return interfaces
 
@@ -212,8 +282,10 @@ def _collect_fdb(transport: SnmpTransport, ip: str,
 
 def _collect_arp(transport: SnmpTransport, ip: str,
                   by_index: dict[int, Interface]) -> list[ArpEntry]:
-    raw = _walk_suffixes(transport, ip, mibs.IP_NET_TO_MEDIA_PHYS_ADDRESS)
     entries = []
+    seen_ips: set[str] = set()
+
+    raw = _walk_suffixes(transport, ip, mibs.IP_NET_TO_MEDIA_PHYS_ADDRESS)
     for suffix, mac in raw.items():
         if_index, ip_addr = _parse_arp_suffix(suffix)
         local_if = by_index.get(if_index)
@@ -222,6 +294,27 @@ def _collect_arp(transport: SnmpTransport, ip: str,
             mac=_normalize_mac(mac),
             local_if=local_if.name if local_if else str(if_index),
         ))
+        seen_ips.add(ip_addr)
+
+    # RFC 4293's version-neutral ipNetToPhysicalTable, additionally -- the
+    # IPv6 neighbor-discovery-cache equivalent of ARP, needed to attach
+    # IPv6-only endpoints (cameras/IoT/etc.) the same way ARP attaches
+    # IPv4-only ones. A real device commonly answers both tables for its
+    # IPv4 entries too; skip any IP already picked up above rather than
+    # recording it twice.
+    raw_v6 = _walk_suffixes(transport, ip, mibs.IP_NET_TO_PHYSICAL_PHYS_ADDRESS)
+    for suffix, mac in raw_v6.items():
+        if_index, ip_addr = _parse_net_to_physical_suffix(suffix)
+        if ip_addr is None or ip_addr in seen_ips:
+            continue
+        local_if = by_index.get(if_index) if if_index is not None else None
+        entries.append(ArpEntry(
+            ip=ip_addr,
+            mac=_normalize_mac(mac),
+            local_if=local_if.name if local_if else str(if_index),
+        ))
+        seen_ips.add(ip_addr)
+
     return entries
 
 
