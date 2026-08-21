@@ -120,7 +120,8 @@ discovery source and layer.
 netdiscovery/
 ├── README.md
 ├── requirements.txt
-├── demo.py                 # end-to-end demo entry point
+├── demo.py                 # end-to-end demo entry point (simulated network)
+├── discover_live.py        # end-to-end entry point against a real network (SNMP)
 ├── netdiscovery/
 │   ├── models.py            # Device/Interface/Neighbor/FdbEntry/ArpEntry/Route
 │   ├── mibs.py               # OID constants + sysObjectID -> vendor map
@@ -141,14 +142,32 @@ netdiscovery/
 
 ## Pointing this at a real network
 
-Replace the transport in `demo.py`:
-
-```python
-from netdiscovery.transport import LiveSnmpTransport
-transport = LiveSnmpTransport(community="public")
+```bash
+pip install -r requirements.txt   # pulls in pysnmp (pinned <7, see note below)
+python discover_live.py --seed 192.168.1.1 [192.168.1.2 ...] --community public
 ```
 
-and pass real seed IP(s) to `discover()`. Everything else -- collection,
-BFS, L2/L3 correlation, the graph model, the HTML rendering -- is
-unchanged. `pysnmp` is only imported when `LiveSnmpTransport` is actually
-instantiated, so the simulated demo path never needs it installed.
+`discover_live.py` is the same engine as `demo.py` -- discovery BFS, device
+classification, L2/L3 correlation, graph model, HTML rendering -- with
+`LiveSnmpTransport` (real SNMP v2c over `pysnmp`) in place of the in-memory
+`SimulatedTransport`. `pysnmp` is only imported when `LiveSnmpTransport` is
+actually instantiated, so the simulated demo path never needs it installed.
+Useful flags: `--port`, `--timeout`, `--retries`, `--max-devices`,
+`--out-dir`. Run `python discover_live.py --help` for the full list.
+
+The SNMP community string is read-only credential material -- pass it via
+`--community` or the `NETDISCOVERY_SNMP_COMMUNITY` environment variable
+rather than leaving it in shell history, and never commit it anywhere.
+
+If nothing responds: check the seed IP(s), the community string, that
+UDP/161 isn't firewalled between this host and the target, and that SNMP
+is actually enabled on the device.
+
+**pysnmp version note.** `pysnmp`'s `hlapi` is asyncio-only in every
+currently maintained release -- `LiveSnmpTransport` wraps each
+get/walk in its own `asyncio.run()` call to keep `SnmpTransport`'s
+synchronous interface identical between the simulated and live paths.
+`requirements.txt` pins `pysnmp<7`: version 7 restructured `hlapi` into
+`v1arch`/`v3arch` submodules that also pull in the full USM/crypto stack
+even for plain v2c polling, so this POC targets the lighter, still
+fully-maintained `pysnmp.hlapi.asyncio` module from the 6.x line instead.

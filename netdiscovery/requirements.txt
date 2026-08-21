@@ -4,4 +4,7 @@ pytest>=7.0
 
 # Real SNMP transport (LiveSnmpTransport). Optional for the simulated demo --
 # only import netdiscovery.transport.LiveSnmpTransport requires it installed.
-pysnmp>=6.1; python_version >= "3.11"
+# Pinned below 7: pysnmp 7 removed the pysnmp.hlapi.asyncio module this
+# transport is built on (folded into v1arch/v3arch, which also pulls in the
+# full USM/crypto stack even for plain v2c use).
+pysnmp>=6.1,<7; python_version >= "3.11"

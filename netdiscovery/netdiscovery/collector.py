@@ -28,6 +28,24 @@ def _mask_to_prefix_len(mask: str) -> int:
     return sum(bin(int(octet)).count("1") for octet in mask.split("."))
 
 
+def _normalize_mac(value: Optional[str]) -> Optional[str]:
+    """Normalize a MAC-typed SNMP value to "aa:bb:cc:dd:ee:ff".
+
+    SimulatedTransport already returns MACs in this form (passthrough,
+    just lowercased). LiveSnmpTransport (pysnmp) renders OctetString MAC
+    values as a single "0x..." hex blob via prettyPrint() -- unpack that
+    into colon-separated octets so device_id.py's OUI fingerprinting
+    (written against the colon-hex form) works identically against a real
+    device.
+    """
+    if not value:
+        return value
+    if value.startswith(("0x", "0X")):
+        hexpart = value[2:]
+        return ":".join(hexpart[i:i + 2] for i in range(0, len(hexpart), 2)).lower()
+    return value.lower()
+
+
 def _parse_fdb_suffix(suffix: str) -> tuple[int, str]:
     """"<vlan>.<6 decimal mac octets>" -> (vlan, "aa:bb:cc:dd:ee:ff")."""
     parts = suffix.split(".")
@@ -63,7 +81,7 @@ def _collect_interfaces(transport: SnmpTransport, ip: str) -> list[Interface]:
         interfaces.append(Interface(
             index=int(idx_str),
             name=name,
-            mac=macs.get(idx_str),
+            mac=_normalize_mac(macs.get(idx_str)),
             speed_mbps=int(speed_bps) // 1_000_000 if speed_bps else None,
             admin_up=admin.get(idx_str, "1") == "1",
             oper_up=oper.get(idx_str, "1") == "1",
@@ -143,7 +161,7 @@ def _collect_arp(transport: SnmpTransport, ip: str,
         local_if = by_index.get(if_index)
         entries.append(ArpEntry(
             ip=ip_addr,
-            mac=mac,
+            mac=_normalize_mac(mac),
             local_if=local_if.name if local_if else str(if_index),
         ))
     return entries

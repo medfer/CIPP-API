@@ -42,16 +42,20 @@ class LiveSnmpTransport(SnmpTransport):
 
     pysnmp is an optional dependency of this POC -- it's only imported when
     this transport is actually instantiated, so the simulated demo path
-    never needs it installed.
+    never needs it installed. pysnmp's hlapi is asyncio-based (there is no
+    synchronous variant in any currently-maintained release), so each
+    get/walk spins up its own event loop via `asyncio.run` -- this keeps
+    `SnmpTransport`'s synchronous get/walk contract identical between
+    `SimulatedTransport` and `LiveSnmpTransport`, at the cost of not
+    overlapping requests to different devices within a single call. Fixing
+    that (e.g. batching concurrent devices under one shared loop) is future
+    work, not needed for this POC to talk to a real device correctly.
     """
 
     def __init__(self, community: str = "public", port: int = 161,
                  timeout: float = 1.5, retries: int = 1):
         try:
-            from pysnmp.hlapi import (  # noqa: F401
-                CommunityData, ContextData, ObjectIdentity, ObjectType,
-                SnmpEngine, UdpTransportTarget,
-            )
+            import pysnmp.hlapi.asyncio  # noqa: F401
         except ImportError as exc:  # pragma: no cover - exercised only without pysnmp
             raise RuntimeError(
                 "pysnmp is required for LiveSnmpTransport; "
@@ -67,47 +71,61 @@ class LiveSnmpTransport(SnmpTransport):
         return self.get(ip, mibs.SYS_DESCR) is not None
 
     def get(self, ip: str, oid: str) -> Optional[str]:
-        from pysnmp.hlapi import (
+        import asyncio
+
+        from pysnmp.hlapi.asyncio import (
             CommunityData, ContextData, ObjectIdentity, ObjectType,
             SnmpEngine, UdpTransportTarget, getCmd,
         )
 
-        iterator = getCmd(
-            SnmpEngine(),
-            CommunityData(self._community, mpModel=1),
-            UdpTransportTarget((ip, self._port), timeout=self._timeout,
-                                retries=self._retries),
-            ContextData(),
-            ObjectType(ObjectIdentity(oid)),
-        )
-        error_indication, error_status, _error_index, var_binds = next(iterator)
-        if error_indication or error_status or not var_binds:
-            return None
-        _name, value = var_binds[0]
-        return str(value)
+        async def _get() -> Optional[str]:
+            error_indication, error_status, _error_index, var_binds = await getCmd(
+                SnmpEngine(),
+                CommunityData(self._community, mpModel=1),
+                UdpTransportTarget((ip, self._port), timeout=self._timeout,
+                                    retries=self._retries),
+                ContextData(),
+                ObjectType(ObjectIdentity(oid)),
+                lookupMib=False,
+            )
+            if error_indication or error_status or not var_binds:
+                return None
+            _name, value = var_binds[0]
+            # prettyPrint(), not str(): pysnmp's str() on byte-backed types
+            # (IpAddress, MAC-typed OctetStrings) returns the raw undecoded
+            # payload bytes, not a readable string -- prettyPrint() is the
+            # one formatting path that's correct for every SNMP value type.
+            return value.prettyPrint()
+
+        return asyncio.run(_get())
 
     def walk(self, ip: str, oid_prefix: str) -> dict[str, str]:
-        from pysnmp.hlapi import (
+        import asyncio
+
+        from pysnmp.hlapi.asyncio import (
             CommunityData, ContextData, ObjectIdentity, ObjectType,
-            SnmpEngine, UdpTransportTarget, nextCmd,
+            SnmpEngine, UdpTransportTarget, walkCmd,
         )
 
-        results: dict[str, str] = {}
-        iterator = nextCmd(
-            SnmpEngine(),
-            CommunityData(self._community, mpModel=1),
-            UdpTransportTarget((ip, self._port), timeout=self._timeout,
-                                retries=self._retries),
-            ContextData(),
-            ObjectType(ObjectIdentity(oid_prefix)),
-            lexicographicMode=False,
-        )
-        for error_indication, error_status, _error_index, var_binds in iterator:
-            if error_indication or error_status:
-                break
-            for name, value in var_binds:
-                oid_str = str(name)
-                if not oid_str.startswith(oid_prefix):
-                    return results
-                results[oid_str] = str(value)
-        return results
+        async def _walk() -> dict[str, str]:
+            results: dict[str, str] = {}
+            async for error_indication, error_status, _error_index, var_binds in walkCmd(
+                SnmpEngine(),
+                CommunityData(self._community, mpModel=1),
+                UdpTransportTarget((ip, self._port), timeout=self._timeout,
+                                    retries=self._retries),
+                ContextData(),
+                ObjectType(ObjectIdentity(oid_prefix)),
+                lexicographicMode=False,
+                lookupMib=False,
+            ):
+                if error_indication or error_status:
+                    break
+                for name, value in var_binds:
+                    oid_str = str(name)
+                    if not oid_str.startswith(oid_prefix):
+                        return results
+                    results[oid_str] = value.prettyPrint()
+            return results
+
+        return asyncio.run(_walk())
